@@ -65,7 +65,7 @@ $ anvil --help
 $ cast --help
 ```
 
-<!-- ### Design choices
+### Design choices
 
 Owner Privileges: The contract owner has special privileges, such as starting and ending the auction. This ensures the owner can control the flow of the auction.
 
@@ -77,25 +77,9 @@ Bids Mapping: The bids are stored in a mapping to allow easy access and manipula
 
 Gas Optimization: Gas is optimized by minimizing state changes and using a single loop to distribute tokens at the end of the auction.
 
-Security: The use of modifiers ensures that only authorized actions are performed at the right time. The contract also clears bids after processing them to avoid re-entrancy attacks. -->
+Security: The use of modifiers ensures that only authorized actions are performed at the right time. The contract also clears bids after processing them to avoid re-entrancy attacks.
 
 ### Output
-
-### Testing
-
-<!-- Suite result: FAILED. 5 passed; 1 failed; 0 skipped; finished in 46.46ms (20.32ms CPU time)
-
-Ran 1 test suite in 2.87s (46.46ms CPU time): 5 tests passed, 1 failed, 0 skipped (6 total tests)
-
-Failing tests:
-Encountered 1 failing test in test/Auction.t.sol:AuctionTest
-[FAIL. Reason: revert: Refund failed] testRefund() (gas: 538228)
-
-Encountered a total of 1 failing tests, 5 tests succeeded -->
-
-* It's not possible for both testEndAuction and testRefund to pass because they represent mutually exclusive scenarios:
-`testEndAuction` assumes all funds are transferred to the owner and tokens are distributed to bidders.
-`testRefund` assumes that funds are kept in the contract to be refunded to bidders.
 
 ## Overview
 
@@ -172,6 +156,22 @@ Processes refunds for bidders who didn't win or partially win the auction.
 ## Test Contract
 
 The test contract (`AuctionTest`) uses Forge's testing framework to verify the functionality of the Auction contract.
+
+### Testing
+
+<!-- Suite result: FAILED. 5 passed; 1 failed; 0 skipped; finished in 46.46ms (20.32ms CPU time)
+
+Ran 1 test suite in 2.87s (46.46ms CPU time): 5 tests passed, 1 failed, 0 skipped (6 total tests)
+
+Failing tests:
+Encountered 1 failing test in test/Auction.t.sol:AuctionTest
+[FAIL. Reason: revert: Refund failed] testRefund() (gas: 538228)
+
+Encountered a total of 1 failing tests, 5 tests succeeded -->
+
+* It's not possible for both testEndAuction and testRefund to pass because they represent mutually exclusive scenarios:
+`testEndAuction` assumes all funds are transferred to the owner and tokens are distributed to bidders.
+`testRefund` assumes that funds are kept in the contract to be refunded to bidders.
 
 ### Setup
 
