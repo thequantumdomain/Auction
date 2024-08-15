@@ -2,29 +2,36 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "forge-std/console.sol";
 
-/**
- * @title Auction Contract
- * @notice This contract allows the owner to start an auction with ERC20 tokens,
- *         users to place bids, and the owner to end the auction and distribute tokens to the highest bidders.
- */
 contract Auction {
-    // State variables
     address public owner;
     IERC20 public token;
     uint256 public auctionEndTime;
     uint256 public totalTokens;
     bool public auctionEnded;
+    uint256 public reservePrice;
+    uint256 public startPrice;
+    uint256 public priceDecreaseRate;
+    uint256 public auctionDuration;
+    uint256 public constant TIME_EXTENSION = 5 minutes;
+    uint256 public constant BATCH_SIZE = 10;
 
-    // Mapping of bidders to their bid amounts
     mapping(address => uint256) public bids;
+    mapping(address => uint256) public maxBids;
+    mapping(address => bool) public whitelist;
+    address[] public bidderList;
 
-    // Events
-    event AuctionStarted(uint256 duration, uint256 totalTokens);
+    event AuctionStarted(
+        uint256 duration,
+        uint256 totalTokens,
+        uint256 startPrice,
+        uint256 reservePrice
+    );
     event BidPlaced(address indexed bidder, uint256 amount);
-    event AuctionEnded(address indexed winner, uint256 amount);
+    event AuctionEnded(address winner, uint256 amount);
+    event Refund(address indexed bidder, uint256 amount);
 
-    // Modifiers
     modifier onlyOwner() {
         require(msg.sender == owner, "Not the contract owner");
         _;
@@ -45,80 +52,152 @@ contract Auction {
     }
 
     constructor() {
-        owner = msg.sender; // Set contract deployer as owner
+        owner = msg.sender;
     }
 
-    /**
-     * @notice Starts the auction with a specified duration and quantity of ERC20 tokens.
-     * @dev Only the owner can start the auction.
-     * @param _token Address of the ERC20 token to be auctioned.
-     * @param _duration Duration of the auction in seconds.
-     * @param _totalTokens Number of tokens to be auctioned.
-     */
     function startAuction(
         address _token,
         uint256 _duration,
-        uint256 _totalTokens
+        uint256 _totalTokens,
+        uint256 _startPrice,
+        uint256 _reservePrice,
+        uint256 _priceDecreaseRate
     ) external onlyOwner {
         require(
             auctionEndTime == 0 || block.timestamp >= auctionEndTime,
             "Previous auction not ended"
         );
         token = IERC20(_token);
+        require(
+            token.balanceOf(address(this)) >= _totalTokens,
+            "Not enough tokens for auction"
+        );
         auctionEndTime = block.timestamp + _duration;
         totalTokens = _totalTokens;
+        startPrice = _startPrice;
+        reservePrice = _reservePrice;
+        priceDecreaseRate = _priceDecreaseRate;
         auctionEnded = false;
-        emit AuctionStarted(_duration, _totalTokens);
+        auctionDuration = _duration;
+        emit AuctionStarted(
+            _duration,
+            _totalTokens,
+            _startPrice,
+            _reservePrice
+        );
     }
 
-    /**
-     * @notice Allows users to place bids on the auctioned tokens.
-     * @dev Only non-owner users can place bids. Auction must be active.
-     */
+    function addToWhitelist(address[] calldata _addresses) external onlyOwner {
+        for (uint256 i = 0; i < _addresses.length; i++) {
+            whitelist[_addresses[i]] = true;
+        }
+    }
+
+    function removeFromWhitelist(
+        address[] calldata _addresses
+    ) external onlyOwner {
+        for (uint256 i = 0; i < _addresses.length; i++) {
+            whitelist[_addresses[i]] = false;
+        }
+    }
+
+    function getCurrentPrice() public view returns (uint256) {
+        if (block.timestamp >= auctionEndTime) return reservePrice;
+        uint256 timeElapsed = block.timestamp -
+            (auctionEndTime - auctionDuration);
+        uint256 priceDrop = (timeElapsed * (startPrice - reservePrice)) /
+            auctionDuration;
+        return startPrice > priceDrop ? startPrice - priceDrop : reservePrice;
+    }
+
     function placeBid() external payable auctionActive {
+        require(whitelist[msg.sender], "Not whitelisted");
         require(msg.sender != owner, "Owner cannot place bids");
         require(msg.value > 0, "Bid must be greater than 0");
+        require(msg.value >= getCurrentPrice(), "Bid too low");
 
-        bids[msg.sender] += msg.value;
+        uint256 newBid = bids[msg.sender] + msg.value;
+        require(newBid > maxBids[msg.sender], "Bid not higher than max bid");
+
+        if (bids[msg.sender] == 0) {
+            bidderList.push(msg.sender);
+        }
+
+        if (block.timestamp > auctionEndTime - TIME_EXTENSION) {
+            auctionEndTime = block.timestamp + TIME_EXTENSION;
+        }
+
+        bids[msg.sender] = newBid;
+        maxBids[msg.sender] = newBid;
+
         emit BidPlaced(msg.sender, msg.value);
     }
 
-    /**
-     * @notice Ends the auction and distributes tokens to the highest bidders proportionally.
-     * @dev Only the owner can end the auction. Auction must have ended.
-     */
-    function endAuction() external onlyOwner auctionEndedOnly {
-        require(!auctionEnded, "Auction already ended");
-
-        auctionEnded = true;
-        uint256 totalBidAmount = address(this).balance;
-
-        for (uint256 i = 0; i < totalTokens; i++) {
-            address highestBidder = findHighestBidder();
-            uint256 tokenAmount = (bids[highestBidder] * totalTokens) /
-                totalBidAmount;
-
-            // Transfer the corresponding token amount to the highest bidder
-            token.transfer(highestBidder, tokenAmount);
-            bids[highestBidder] = 0; // Clear the bid amount
-            emit AuctionEnded(highestBidder, tokenAmount);
-        }
-
-        // Transfer remaining ETH to the owner
-        payable(owner).transfer(address(this).balance);
+    function setMaxBid(uint256 _maxBid) external auctionActive {
+        require(whitelist[msg.sender], "Not whitelisted");
+        require(
+            _maxBid > maxBids[msg.sender],
+            "New max bid not higher than current max bid"
+        );
+        maxBids[msg.sender] = _maxBid;
     }
 
-    /**
-     * @notice Finds the highest bidder for the auction.
-     * @return highestBidder Address of the highest bidder.
-     */
-    function findHighestBidder() internal view returns (address highestBidder) {
-        uint256 highestBid = 0;
-        for (uint256 i = 0; i < totalTokens; i++) {
-            if (bids[highestBidder] > highestBid) {
-                highestBid = bids[highestBidder];
-                highestBidder = highestBidder;
+    function endAuction() external onlyOwner auctionEndedOnly {
+        require(!auctionEnded, "Auction already ended");
+        auctionEnded = true;
+
+        uint256 totalBidAmount = 0;
+        for (uint256 i = 0; i < bidderList.length; i++) {
+            totalBidAmount += bids[bidderList[i]];
+        }
+
+        require(totalBidAmount >= reservePrice, "Reserve price not met");
+
+        uint256 tokenDistributed = 0;
+        for (uint256 i = 0; i < bidderList.length; i++) {
+            address bidder = bidderList[i];
+            uint256 tokenAmount = (bids[bidder] * totalTokens) / totalBidAmount;
+
+            if (tokenAmount > 0) {
+                require(
+                    token.transfer(bidder, tokenAmount),
+                    "Token transfer failed"
+                );
+                tokenDistributed += tokenAmount;
+                emit AuctionEnded(bidder, tokenAmount);
             }
         }
+
+        require(
+            tokenDistributed <= totalTokens,
+            "Distributed more tokens than available"
+        );
+
+        (bool success, ) = payable(owner).call{value: address(this).balance}(
+            ""
+        );
+        require(success, "Failed to send Ether to owner");
+    }
+
+    function withdrawRemainingTokens() external onlyOwner auctionEndedOnly {
+        uint256 remainingTokens = token.balanceOf(address(this));
+        require(
+            token.transfer(owner, remainingTokens),
+            "Token transfer failed"
+        );
+    }
+
+    function refund() external {
+        require(auctionEnded, "Auction not ended");
+        uint256 refundAmount = bids[msg.sender];
+        require(refundAmount > 0, "No refund available");
+
+        bids[msg.sender] = 0;
+        maxBids[msg.sender] = 0;
+
+        (bool success, ) = payable(msg.sender).call{value: refundAmount}("");
+        require(success, "Refund failed");
+
+        emit Refund(msg.sender, refundAmount);
     }
 }
